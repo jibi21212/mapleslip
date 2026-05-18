@@ -1,0 +1,43 @@
+# ─── User data (sensitive!) ────────────────────────────────────
+# Contains Plaid API keys, access tokens, parsed tax data, and uploaded PDFs.
+# NEVER commit this folder.
+data/
+
+# ─── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Virtual environments ──────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+
+# ─── IDE / editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Build / dist ──────────────────────────────────────────────
+build/
+dist/
+*.spec
+
+# ─── Misc ──────────────────────────────────────────────────────
+*.log
+.env
+.env.local
