@@ -29,11 +29,12 @@ mapleslip ingests Canadian tax slips (T4, T5, T3, T4A, T2202, RRSP receipts, etc
 - **OCR fallback** via Tesseract for scanned/photographed PDFs
 - **Watch folder** — point at Downloads, new PDFs auto-import
 
-### 📧 Email scanner (IMAP)
-- Scans your email for tax slips in PDF attachments
-- Works with Gmail, Outlook, Yahoo, iCloud, and Canadian ISPs (Shaw, Bell, Rogers, Telus, Videotron, etc.)
-- One-click import of attachments
-- Credentials never stored — used only for the scan
+### 📧 Email scanner (Gmail OAuth)
+- Browser-based OAuth login — **no passwords required**, just click "Connect Gmail Account"
+- **Multiple accounts** supported — connect as many as you need (personal, school, etc.)
+- **Tax-year filtered** — only shows slips matching the selected tax year (Gmail's full-text search + date range filter + per-result year verification)
+- One-click import of PDF attachments
+- Tokens stored locally in your `data/config.json` (gitignored); access can be revoked at any time
 
 ### 🏦 Bank integration (Plaid, free tier)
 - Connect bank accounts via Plaid Link (OAuth flow, your credentials never touch this app)
@@ -97,7 +98,18 @@ That's it. The app creates a `data/` folder on first run to store your tax info 
 4. Use the **Development** environment (free, real banks, up to 100 connections)
 
 ### Gmail (for email scanner)
-Use an [App Password](https://myaccount.google.com/apppasswords) (not your regular password). 2FA must be enabled.
+One-time Google Cloud setup (free, ~5 minutes):
+
+1. Open [console.cloud.google.com](https://console.cloud.google.com) and sign in
+2. Create a new project (e.g. `mapleslip-personal`)
+3. Enable the **Gmail API** (search "Gmail API" in the top bar → Enable)
+4. Configure the OAuth consent screen: **APIs & Services → OAuth consent screen** → External → add your email as a test user
+5. Create OAuth credentials: **APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop app**
+6. Copy the client ID + client secret
+7. In mapleslip → **Email Scanner** tab → **OAuth Setup** → paste them in
+8. Click **Connect Gmail Account** — browser opens, you log in once, done
+
+You can connect multiple Gmail accounts after this initial setup.
 
 ### Watch folder
 **Settings** (top right) → enter folder path (e.g. `C:\Users\You\Downloads`) → enable.
@@ -111,7 +123,7 @@ Use an [App Password](https://myaccount.google.com/apppasswords) (not your regul
 | GUI | CustomTkinter (modern dark theme over Tkinter) |
 | PDF parsing | pdfplumber + pypdfium2 |
 | OCR fallback | pytesseract + Tesseract |
-| Email | Python's built-in `imaplib` (no third-party API) |
+| Email | Gmail API + OAuth2 (google-auth, google-api-python-client) |
 | Bank API | Plaid (free tier) |
 | PDF generation | reportlab |
 | Storage | Local JSON files |
@@ -134,7 +146,7 @@ mapleslip/
 │   ├── deadlines.py            # Tax deadline calculations
 │   ├── pdf_export.py           # T1 cheat-sheet PDF generator
 │   ├── watch_folder.py         # Auto-import polling
-│   ├── email_scanner.py        # IMAP scanner for tax slips in email
+│   ├── email_scanner.py        # Gmail OAuth + Gmail API scanner
 │   ├── plaid_integration.py    # Plaid API client + OAuth flow
 │   └── plaid_link.html         # Plaid Link OAuth landing page
 └── data/                       # User data (gitignored — your tax info stays local)
@@ -147,8 +159,8 @@ mapleslip/
 Everything runs **locally** on your machine.
 
 - Tax slips, parsed data, and config live in the `data/` folder on your disk (never synced)
-- Plaid is the only external service, and only if you opt in to bank integration
-- Email credentials are used in-memory for one scan, never written to disk
+- Plaid and Google (Gmail API) are external services, opt-in only
+- Gmail OAuth tokens are stored locally in `data/config.json` — revocable at any time from the app or from your Google Account settings
 - The `data/` folder is `.gitignored` — your tax info will never accidentally end up on GitHub
 
 ---

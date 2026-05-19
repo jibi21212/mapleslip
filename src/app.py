@@ -15,15 +15,18 @@ from storage import (
 )
 from parser import parse_document, extract_text_from_pdf, detect_form_type, check_ocr_status
 from tax_tips import FORM_TIPS, GENERAL_TIPS, FORM_DISPLAY_NAMES
-from config import load_config, save_config, is_plaid_configured
+from config import (
+    load_config, save_config, is_plaid_configured, is_google_configured,
+    add_email_account, remove_email_account,
+)
 from plaid_integration import (
     create_link_token, exchange_public_token,
     get_accounts, get_transactions, start_plaid_link,
 )
 from email_scanner import (
-    connect as imap_connect, scan_for_tax_emails,
-    download_attachment, disconnect as imap_disconnect,
-    guess_imap_server,
+    start_oauth_flow, get_user_email,
+    scan_for_tax_slips, download_attachment as gmail_download_attachment,
+    revoke_credentials,
 )
 from tax_calculator import calculate_estimated_tax, PROVINCE_NAMES, PROVINCIAL_BRACKETS_2024
 from deadlines import get_deadlines, format_deadline_text
@@ -909,114 +912,254 @@ class TaxKingApp(ctk.CTk):
 
         ctk.CTkButton(dialog, text="Got it", command=dialog.destroy, width=100).pack(pady=(0, 16))
 
-    # ── Email Scanner Tab ──────────────────────────────────────
+    # ── Email Scanner Tab (Gmail OAuth) ────────────────────────
     def _build_email_tab(self):
-        # Config section
-        config_frame = ctk.CTkFrame(self.tab_email, fg_color=COLORS["card"])
-        config_frame.pack(fill="x", padx=4, pady=(4, 8))
+        # ── Toolbar ──
+        toolbar = ctk.CTkFrame(self.tab_email, fg_color="transparent")
+        toolbar.pack(fill="x", padx=4, pady=(4, 8))
 
-        ctk.CTkLabel(
-            config_frame,
-            text="Scan your email for tax slips (T4, T5, T2202, etc.) sent as PDF attachments.",
-            font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"],
-        ).pack(padx=16, pady=(10, 4), anchor="w")
-
-        ctk.CTkLabel(
-            config_frame,
-            text="For Gmail: use an App Password (Google Account > Security > App Passwords). "
-                 "Your credentials are only used for this scan and are not stored.",
-            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
-            wraplength=700, justify="left",
-        ).pack(padx=16, pady=(0, 8), anchor="w")
-
-        # Email field
-        row1 = ctk.CTkFrame(config_frame, fg_color="transparent")
-        row1.pack(fill="x", padx=16, pady=4)
-        ctk.CTkLabel(row1, text="Email:", width=120).pack(side="left")
-        self.email_addr_entry = ctk.CTkEntry(row1, width=300, placeholder_text="you@gmail.com")
-        self.email_addr_entry.pack(side="left", padx=8)
-
-        # Password field
-        row2 = ctk.CTkFrame(config_frame, fg_color="transparent")
-        row2.pack(fill="x", padx=16, pady=4)
-        ctk.CTkLabel(row2, text="App Password:", width=120).pack(side="left")
-        self.email_pass_entry = ctk.CTkEntry(row2, width=300, placeholder_text="App password (not your regular password)", show="*")
-        self.email_pass_entry.pack(side="left", padx=8)
-
-        # IMAP server (auto-detected)
-        row3 = ctk.CTkFrame(config_frame, fg_color="transparent")
-        row3.pack(fill="x", padx=16, pady=4)
-        ctk.CTkLabel(row3, text="IMAP Server:", width=120).pack(side="left")
-        self.imap_server_entry = ctk.CTkEntry(row3, width=300, placeholder_text="Auto-detected from email")
-        self.imap_server_entry.pack(side="left", padx=8)
-
-        # Scan button
-        btn_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=16, pady=(8, 12))
         ctk.CTkButton(
-            btn_frame, text="Scan for Tax Slips", command=self._scan_email,
+            toolbar, text="Connect Gmail Account", command=self._connect_gmail,
             width=180, fg_color=COLORS["green"], hover_color="#27ae60",
-        ).pack(side="left")
-        self.email_status_label = ctk.CTkLabel(
-            btn_frame, text="", font=ctk.CTkFont(size=12),
-        )
-        self.email_status_label.pack(side="left", padx=12)
+        ).pack(side="left", padx=(0, 8))
 
-        # Results section
+        ctk.CTkButton(
+            toolbar, text="Scan All Accounts", command=self._scan_all_emails,
+            width=160, fg_color=COLORS["withheld"], hover_color="#2980b9",
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            toolbar, text="OAuth Setup", command=self._show_google_oauth_setup,
+            width=120, fg_color=COLORS["accent"], hover_color="#1a4a8a",
+        ).pack(side="left")
+
+        config = load_config()
+        if is_google_configured(config):
+            status_text = "OAuth: Configured"
+            status_color = COLORS["green"]
+        else:
+            status_text = "OAuth: Not configured"
+            status_color = COLORS["yellow"]
+        self.email_status_label = ctk.CTkLabel(
+            toolbar, text=status_text, font=ctk.CTkFont(size=11),
+            text_color=status_color,
+        )
+        self.email_status_label.pack(side="right", padx=8)
+
+        # ── Connected accounts list ──
         ctk.CTkLabel(
-            self.tab_email, text="Found Tax Emails",
+            self.tab_email, text="Connected Accounts",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(padx=8, pady=(4, 4), anchor="w")
+
+        self.email_accounts_frame = ctk.CTkScrollableFrame(self.tab_email, height=120)
+        self.email_accounts_frame.pack(fill="x", padx=4, pady=(0, 8))
+
+        # ── Results section ──
+        results_header = ctk.CTkFrame(self.tab_email, fg_color="transparent")
+        results_header.pack(fill="x", padx=8, pady=(4, 4))
+        ctk.CTkLabel(
+            results_header, text="Found Tax Slips",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left")
+        self.email_results_status = ctk.CTkLabel(
+            results_header, text="",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+        )
+        self.email_results_status.pack(side="left", padx=12)
 
         self.email_results_frame = ctk.CTkScrollableFrame(self.tab_email)
         self.email_results_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
 
-        # Store connection for reuse during import
-        self._imap_conn = None
-        self._email_results = []
+        # State
+        self._email_results = []  # list of (account_email, result_dict)
 
-    def _scan_email(self):
-        email_addr = self.email_addr_entry.get().strip()
-        password = self.email_pass_entry.get().strip()
+    def _refresh_email_tab(self):
+        config = load_config()
 
-        if not email_addr or not password:
-            messagebox.showwarning("Missing Credentials", "Enter your email and app password.")
+        # Update status label
+        if is_google_configured(config):
+            self.email_status_label.configure(text="OAuth: Configured", text_color=COLORS["green"])
+        else:
+            self.email_status_label.configure(text="OAuth: Not configured", text_color=COLORS["yellow"])
+
+        # Refresh account list
+        for w in self.email_accounts_frame.winfo_children():
+            w.destroy()
+
+        accounts = config.get("email_accounts", [])
+        if not accounts:
+            ctk.CTkLabel(
+                self.email_accounts_frame,
+                text="No Gmail accounts connected. Click 'Connect Gmail Account' to add one.",
+                font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"],
+            ).pack(pady=12)
+        else:
+            for acct in accounts:
+                row = ctk.CTkFrame(
+                    self.email_accounts_frame, fg_color=COLORS["card"], corner_radius=6,
+                )
+                row.pack(fill="x", pady=(0, 4))
+
+                ctk.CTkLabel(
+                    row, text=acct["email"],
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                ).pack(side="left", padx=12, pady=8)
+
+                added = acct.get("added", "")[:10]
+                if added:
+                    ctk.CTkLabel(
+                        row, text=f"Added {added}",
+                        font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+                    ).pack(side="left", padx=8, pady=8)
+
+                email = acct["email"]
+                ctk.CTkButton(
+                    row, text="Remove", width=80,
+                    fg_color=COLORS["warning"], hover_color="#c0392b",
+                    command=lambda e=email: self._remove_gmail_account(e),
+                ).pack(side="right", padx=(4, 12), pady=8)
+                ctk.CTkButton(
+                    row, text="Scan", width=80,
+                    fg_color=COLORS["withheld"], hover_color="#2980b9",
+                    command=lambda e=email: self._scan_one_email(e),
+                ).pack(side="right", padx=4, pady=8)
+
+        # Refresh results list
+        self._refresh_email_results()
+
+    def _connect_gmail(self):
+        config = load_config()
+        if not is_google_configured(config):
+            messagebox.showinfo(
+                "OAuth Not Configured",
+                "Set up Google OAuth credentials first.\n\n"
+                "Click 'OAuth Setup' for step-by-step instructions.",
+            )
             return
 
-        imap_server = self.imap_server_entry.get().strip()
-        if not imap_server:
-            imap_server = guess_imap_server(email_addr)
-            self.imap_server_entry.delete(0, "end")
-            self.imap_server_entry.insert(0, imap_server)
-
-        self.email_status_label.configure(text="Connecting...", text_color=COLORS["yellow"])
+        self.email_status_label.configure(text="Opening browser...", text_color=COLORS["yellow"])
         self.update_idletasks()
 
+        def on_complete(creds):
+            if not creds:
+                self.after(100, lambda: messagebox.showerror(
+                    "OAuth Failed", "Authorization was cancelled or failed.",
+                ))
+                self.after(100, lambda: self._refresh_email_tab())
+                return
+
+            try:
+                # Fetch the user's email address
+                user_email = get_user_email(creds)
+                if not user_email:
+                    raise RuntimeError("Could not retrieve email address from Google.")
+
+                # Save it
+                latest_config = load_config()
+                add_email_account(latest_config, user_email, creds)
+                self.after(100, lambda: self._refresh_email_tab())
+                self.after(100, lambda: messagebox.showinfo(
+                    "Gmail Connected", f"Connected {user_email}!",
+                ))
+            except Exception as e:
+                self.after(100, lambda err=e: messagebox.showerror(
+                    "Connection Error", f"Connected but failed to finalize:\n{err}",
+                ))
+
         try:
-            if self._imap_conn:
-                imap_disconnect(self._imap_conn)
-            self._imap_conn = imap_connect(email_addr, password, imap_server)
+            start_oauth_flow(
+                config["google_client_id"], config["google_client_secret"], on_complete,
+            )
         except Exception as e:
-            self.email_status_label.configure(text="Connection failed", text_color=COLORS["warning"])
-            messagebox.showerror("Connection Error", f"Could not connect:\n{e}")
+            messagebox.showerror("OAuth Error", f"Could not start OAuth flow:\n{e}")
+            self._refresh_email_tab()
+
+    def _remove_gmail_account(self, email_addr):
+        if not messagebox.askyesno(
+            "Remove Account",
+            f"Remove {email_addr} from connected accounts?\n\n"
+            f"This will also revoke the access token.",
+        ):
             return
 
-        self.email_status_label.configure(text="Scanning...", text_color=COLORS["yellow"])
+        config = load_config()
+        # Find credentials and revoke
+        for acct in config.get("email_accounts", []):
+            if acct.get("email") == email_addr:
+                try:
+                    revoke_credentials(acct.get("credentials", {}))
+                except Exception:
+                    pass
+                break
+
+        remove_email_account(config, email_addr)
+        self._refresh_email_tab()
+
+    def _scan_one_email(self, email_addr):
+        config = load_config()
+        accts = [a for a in config.get("email_accounts", []) if a.get("email") == email_addr]
+        if not accts:
+            return
+        self._do_scan(accts)
+
+    def _scan_all_emails(self):
+        config = load_config()
+        accts = config.get("email_accounts", [])
+        if not accts:
+            messagebox.showinfo("No Accounts", "Connect at least one Gmail account first.")
+            return
+        self._do_scan(accts)
+
+    def _do_scan(self, accounts):
+        tax_year = int(self.year_var.get())
+        self.email_results_status.configure(
+            text=f"Scanning {len(accounts)} account(s) for tax year {tax_year}...",
+            text_color=COLORS["yellow"],
+        )
         self.update_idletasks()
 
-        try:
-            tax_year = int(self.year_var.get())
-            results = scan_for_tax_emails(self._imap_conn, year=tax_year)
-            self._email_results = results
-        except Exception as e:
-            self.email_status_label.configure(text="Scan failed", text_color=COLORS["warning"])
-            messagebox.showerror("Scan Error", f"Error scanning emails:\n{e}")
-            return
+        all_results = []
+        errors = []
+        for acct in accounts:
+            email_addr = acct["email"]
+            creds = acct.get("credentials", {})
+            try:
+                results = scan_for_tax_slips(creds, tax_year)
+                for r in results:
+                    all_results.append((email_addr, r))
 
-        self.email_status_label.configure(
-            text=f"Found {len(results)} emails with PDF attachments",
+                # Save refreshed token if Google bumped it
+                # (the Credentials object updates the access_token internally)
+                # We refresh the saved credentials with whatever is current
+                config = load_config()
+                for stored in config.get("email_accounts", []):
+                    if stored.get("email") == email_addr:
+                        # Note: we'd need access to the refreshed creds dict here.
+                        # The library handles refresh transparently inside scan_for_tax_slips,
+                        # but doesn't expose the new token unless we capture it explicitly.
+                        # For now we just leave the stored token; refresh happens on next scan.
+                        break
+            except Exception as e:
+                errors.append(f"{email_addr}: {e}")
+
+        self._email_results = all_results
+
+        verified_count = sum(1 for _, r in all_results if r.get("tax_year_match"))
+        self.email_results_status.configure(
+            text=(
+                f"Found {len(all_results)} email(s) with PDF attachments "
+                f"({verified_count} matched tax year {tax_year})"
+            ),
             text_color=COLORS["green"],
         )
+
+        if errors:
+            messagebox.showwarning(
+                "Some Scans Failed",
+                "Errors encountered:\n" + "\n".join(errors[:5]),
+            )
+
         self._refresh_email_results()
 
     def _refresh_email_results(self):
@@ -1026,38 +1169,61 @@ class TaxKingApp(ctk.CTk):
         if not self._email_results:
             ctk.CTkLabel(
                 self.email_results_frame,
-                text="No tax-related emails found yet. Click 'Scan for Tax Slips' to search.",
+                text="No results yet. Connect a Gmail account and click 'Scan'.",
                 font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"],
             ).pack(pady=20)
             return
 
-        for result in self._email_results:
-            card = ctk.CTkFrame(self.email_results_frame, fg_color=COLORS["card"], corner_radius=8)
+        tax_year = int(self.year_var.get())
+
+        for email_addr, result in self._email_results:
+            card = ctk.CTkFrame(
+                self.email_results_frame, fg_color=COLORS["card"], corner_radius=8,
+            )
             card.pack(fill="x", pady=(0, 6))
 
-            # Email info
+            # Header
             header = ctk.CTkFrame(card, fg_color=COLORS["accent"], corner_radius=6)
             header.pack(fill="x", padx=8, pady=(8, 4))
 
-            subject = result.get("subject", "No Subject")[:80]
+            subject = result.get("subject", "(no subject)")[:80]
             ctk.CTkLabel(
                 header, text=subject,
                 font=ctk.CTkFont(size=13, weight="bold"),
             ).pack(side="left", padx=12, pady=6)
 
-            date_str = result.get("date", "")[:25]
+            # Tax year match indicator
+            verified_year = result.get("verified_year")
+            if verified_year is not None and verified_year != tax_year:
+                year_color = COLORS["warning"]
+                year_text = f"⚠ Year {verified_year}"
+            elif verified_year == tax_year:
+                year_color = COLORS["green"]
+                year_text = f"✓ Year {tax_year}"
+            else:
+                year_color = COLORS["text_muted"]
+                year_text = "? Year unknown"
+
             ctk.CTkLabel(
-                header, text=date_str,
-                font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+                header, text=year_text,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=year_color,
             ).pack(side="right", padx=12, pady=6)
 
+            # Sender + account
+            info = ctk.CTkFrame(card, fg_color="transparent")
+            info.pack(fill="x", padx=20, pady=(2, 4))
             sender = result.get("sender", "")[:60]
             ctk.CTkLabel(
-                card, text=f"From: {sender}",
+                info, text=f"From: {sender}",
                 font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
-            ).pack(padx=20, pady=(2, 4), anchor="w")
+            ).pack(side="left")
+            ctk.CTkLabel(
+                info, text=f"In: {email_addr}",
+                font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+            ).pack(side="right")
 
-            # Attachments with import buttons
+            # Attachments with Import buttons
             for att in result.get("attachments", []):
                 att_frame = ctk.CTkFrame(card, fg_color="transparent")
                 att_frame.pack(fill="x", padx=20, pady=2)
@@ -1070,41 +1236,109 @@ class TaxKingApp(ctk.CTk):
                 ).pack(side="left")
 
                 msg_id = result.get("msg_id")
+                att_id = att.get("attachment_id")
                 ctk.CTkButton(
                     att_frame, text="Import", width=80,
                     fg_color=COLORS["green"], hover_color="#27ae60",
-                    command=lambda mid=msg_id, fn=filename: self._import_email_attachment(mid, fn),
+                    command=lambda e=email_addr, mid=msg_id, aid=att_id, fn=filename: (
+                        self._import_gmail_attachment(e, mid, aid, fn)
+                    ),
                 ).pack(side="right", padx=4)
 
-            # Bottom padding
             ctk.CTkFrame(card, fg_color="transparent", height=4).pack()
 
-    def _import_email_attachment(self, msg_id, filename):
-        if not self._imap_conn:
-            messagebox.showwarning("Not Connected", "Please scan your email again.")
+    def _import_gmail_attachment(self, email_addr, msg_id, attachment_id, filename):
+        config = load_config()
+        accts = [a for a in config.get("email_accounts", []) if a.get("email") == email_addr]
+        if not accts:
+            messagebox.showerror("Account Missing", "That Gmail account is no longer connected.")
             return
 
+        creds = accts[0].get("credentials", {})
+
         try:
-            saved_path = download_attachment(self._imap_conn, msg_id, filename)
+            saved_path = gmail_download_attachment(creds, msg_id, attachment_id, filename)
             if not saved_path:
                 messagebox.showerror("Download Error", f"Could not download {filename}")
                 return
 
             form_type, parsed_data = parse_document(saved_path)
-
             if form_type == "unknown":
                 form_type = self._ask_form_type(filename)
                 if form_type and form_type != "unknown":
                     _, parsed_data = parse_document(saved_path, form_type)
 
             self.tax_data = add_document_entry(
-                self.tax_data, form_type, saved_path,
-                parsed_data, filename,
+                self.tax_data, form_type, saved_path, parsed_data, filename,
             )
             self.refresh_all()
-            messagebox.showinfo("Imported", f"{filename} imported as {FORM_DISPLAY_NAMES.get(form_type, form_type)}!")
+            messagebox.showinfo(
+                "Imported",
+                f"{filename} imported as {FORM_DISPLAY_NAMES.get(form_type, form_type)}!",
+            )
         except Exception as e:
             messagebox.showerror("Import Error", f"Error importing {filename}:\n{e}")
+
+    def _show_google_oauth_setup(self):
+        config = load_config()
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Google OAuth Setup")
+        dialog.geometry("620x600")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog, text="Google OAuth Setup",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(padx=20, pady=(20, 8))
+
+        instructions = (
+            "One-time setup to enable Gmail integration. Takes about 5 minutes.\n\n"
+            "1. Go to console.cloud.google.com (sign in with your Google account)\n"
+            "2. Create a new project (top bar → 'Select a project' → 'New Project')\n"
+            "3. Enable Gmail API: search 'Gmail API' in the top bar → click → Enable\n"
+            "4. Set up OAuth consent screen:\n"
+            "    • APIs & Services → OAuth consent screen\n"
+            "    • Choose 'External', click Create\n"
+            "    • Fill in app name (e.g. 'mapleslip-personal') and your email\n"
+            "    • Skip scopes screen, add yourself as a test user\n"
+            "5. Create credentials:\n"
+            "    • APIs & Services → Credentials → Create Credentials → OAuth client ID\n"
+            "    • Application type: 'Desktop app'\n"
+            "    • Copy the client ID and client secret below"
+        )
+        ctk.CTkLabel(
+            dialog, text=instructions,
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+            wraplength=560, justify="left",
+        ).pack(padx=20, pady=(0, 12), anchor="w")
+
+        # Client ID
+        ctk.CTkLabel(dialog, text="Client ID:", font=ctk.CTkFont(size=13)).pack(padx=20, anchor="w")
+        client_id_entry = ctk.CTkEntry(dialog, width=560, placeholder_text="xxxxx.apps.googleusercontent.com")
+        client_id_entry.pack(padx=20, pady=(2, 8))
+        if config.get("google_client_id"):
+            client_id_entry.insert(0, config["google_client_id"])
+
+        # Client Secret
+        ctk.CTkLabel(dialog, text="Client Secret:", font=ctk.CTkFont(size=13)).pack(padx=20, anchor="w")
+        secret_entry = ctk.CTkEntry(dialog, width=560, placeholder_text="GOCSPX-...", show="*")
+        secret_entry.pack(padx=20, pady=(2, 12))
+        if config.get("google_client_secret"):
+            secret_entry.insert(0, config["google_client_secret"])
+
+        def save_settings():
+            config["google_client_id"] = client_id_entry.get().strip()
+            config["google_client_secret"] = secret_entry.get().strip()
+            save_config(config)
+            self._refresh_email_tab()
+            dialog.destroy()
+
+        ctk.CTkButton(
+            dialog, text="Save", command=save_settings,
+            width=140, fg_color=COLORS["green"], hover_color="#27ae60",
+        ).pack(pady=(0, 16))
 
     # ── Bank Accounts Tab ───────────────────────────────────────
     def _build_bank_tab(self):
@@ -1669,6 +1903,7 @@ class TaxKingApp(ctk.CTk):
     def refresh_all(self):
         self._refresh_dashboard()
         self._refresh_documents()
+        self._refresh_email_tab()
         self._refresh_bank_tab()
         self._refresh_manual_entries()
 

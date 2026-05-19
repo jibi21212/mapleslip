@@ -102,11 +102,14 @@ Plaid Link is a web widget. For a desktop app, the cleanest flow is:
 
 This avoids embedding a webview in Tkinter (painful) or requiring an external browser auth flow.
 
-### Why IMAP for email instead of Gmail API
-- IMAP works with **any** email provider (Gmail, Outlook, Yahoo, iCloud, Shaw, Bell, Rogers, Telus, Videotron, etc.) — important for Canadian users
-- No OAuth app registration needed
-- No third-party service (Google's API counts as a third party)
-- User just needs an app password
+### Why Gmail API + OAuth (current — replaced IMAP)
+- **User feedback**: didn't want to type passwords/IMAP servers, wanted a "log in via browser" flow like Plaid
+- Gmail's `q` search parameter is much more powerful than IMAP search (proper date filtering, full-text)
+- Tokens are persistent (refresh token), so the user authenticates once and the app uses it forever
+- Tradeoff: **Gmail-only** for now (Outlook would need a separate Microsoft Graph OAuth integration)
+- Tradeoff: **user must do a one-time Google Cloud Console setup** (~5 min) to get their own OAuth client_id/secret. This is unavoidable for a desktop OAuth app — Google requires app registration. The app provides step-by-step instructions in the OAuth Setup dialog.
+
+The previous IMAP+password code is gone. If we ever want to support non-Gmail providers, we should add separate OAuth integrations (Microsoft Graph for Outlook, Yahoo's OAuth, etc.) — NOT bring IMAP back.
 
 ### Why we don't actually file taxes
 Filing via NETFILE requires being a CRA-certified tax software vendor. Not feasible for a personal project. The cheat-sheet PDF is the closest substitute — the user types those numbers into Wealthsimple Tax (which is CRA-certified and free) to file.
@@ -120,7 +123,7 @@ All of these are working and tested:
 - [x] PDF upload with auto-detection of form type
 - [x] Parsers for: T4, T4A, T4E, T4RSP, T5, T3, T2202, RRSP receipts, W-2, 1099-INT/DIV/NEC/MISC, 1098, 1098-T, 1098-E
 - [x] Tesseract OCR fallback for scanned PDFs (auto-detects Tesseract on Windows at default install path)
-- [x] Email scanner via IMAP — Gmail, Outlook, Yahoo, iCloud, and Canadian ISPs
+- [x] Gmail email scanner via OAuth2 (browser-based auth, no passwords). Supports multiple accounts. Filters slips by tax year using Gmail's `q` search parameter + per-result year verification.
 - [x] Plaid integration — Connect Bank flow, pull transactions, view accounts
 - [x] Manual entry for any form/field
 - [x] Tax tips: 11 general + per-form-field tooltips
@@ -280,6 +283,10 @@ On first run, the app creates a `data/` folder. The user enters Plaid keys in **
    - T1 cheat-sheet PDF export
    - Deadline reminders on dashboard
    - Watch folder for auto-import from Downloads
-7. User said "push to GitHub" → that's where we are now
+7. User said "push to GitHub" → repo created at github.com/jibi21212/mapleslip (public, MIT)
+8. User tried the app and gave feedback:
+   - "Why do we need to give our email password and imap server?" → **dropped IMAP entirely, replaced with Gmail OAuth** (browser-based flow like Plaid)
+   - "Do we double check the slips are from the correct tax year?" → **fixed broken filter**, now uses Gmail's `q` search with `after:`/`before:` date range + per-result year verification from subject + email date
+   - "Can we attach more than 1 email?" → **multiple Gmail accounts** now supported. Config stores a list. UI shows each connected account with individual Scan and Remove buttons, plus a top-level Scan All.
 
 The user's overall vision: an app that turns "doing your taxes" into "open the app in April, click one button, copy the numbers."
