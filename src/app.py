@@ -17,7 +17,7 @@ from parser import parse_document, extract_text_from_pdf, detect_form_type, chec
 from tax_tips import FORM_TIPS, GENERAL_TIPS, FORM_DISPLAY_NAMES
 from config import (
     load_config, save_config, is_plaid_configured, is_google_configured,
-    add_email_account, remove_email_account,
+    add_email_account, remove_email_account, get_google_oauth_credentials,
 )
 from plaid_integration import (
     create_link_token, exchange_public_token,
@@ -928,18 +928,13 @@ class TaxKingApp(ctk.CTk):
             width=160, fg_color=COLORS["withheld"], hover_color="#2980b9",
         ).pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(
-            toolbar, text="OAuth Setup", command=self._show_google_oauth_setup,
-            width=120, fg_color=COLORS["accent"], hover_color="#1a4a8a",
-        ).pack(side="left")
-
-        config = load_config()
-        if is_google_configured(config):
-            status_text = "OAuth: Configured"
+        # Status indicator (silent fail mode — no setup UI shown to end users)
+        if is_google_configured():
+            status_text = "Gmail integration: Ready"
             status_color = COLORS["green"]
         else:
-            status_text = "OAuth: Not configured"
-            status_color = COLORS["yellow"]
+            status_text = "Gmail integration: Unavailable"
+            status_color = COLORS["text_muted"]
         self.email_status_label = ctk.CTkLabel(
             toolbar, text=status_text, font=ctk.CTkFont(size=11),
             text_color=status_color,
@@ -977,11 +972,15 @@ class TaxKingApp(ctk.CTk):
     def _refresh_email_tab(self):
         config = load_config()
 
-        # Update status label
-        if is_google_configured(config):
-            self.email_status_label.configure(text="OAuth: Configured", text_color=COLORS["green"])
+        # Update status label (silent — no setup UI)
+        if is_google_configured():
+            self.email_status_label.configure(
+                text="Gmail integration: Ready", text_color=COLORS["green"],
+            )
         else:
-            self.email_status_label.configure(text="OAuth: Not configured", text_color=COLORS["yellow"])
+            self.email_status_label.configure(
+                text="Gmail integration: Unavailable", text_color=COLORS["text_muted"],
+            )
 
         # Refresh account list
         for w in self.email_accounts_frame.winfo_children():
@@ -1029,16 +1028,20 @@ class TaxKingApp(ctk.CTk):
         self._refresh_email_results()
 
     def _connect_gmail(self):
-        config = load_config()
-        if not is_google_configured(config):
-            messagebox.showinfo(
-                "OAuth Not Configured",
-                "Set up Google OAuth credentials first.\n\n"
-                "Click 'OAuth Setup' for step-by-step instructions.",
+        client_id, client_secret = get_google_oauth_credentials()
+        if not client_id or not client_secret:
+            messagebox.showerror(
+                "Gmail Integration Unavailable",
+                "Gmail integration isn't available in this installation.\n\n"
+                "If you're running mapleslip from a public clone, you'll need "
+                "to obtain the developer credentials file (data/.dev_credentials.json) "
+                "or contact the maintainer.",
             )
             return
 
-        self.email_status_label.configure(text="Opening browser...", text_color=COLORS["yellow"])
+        self.email_status_label.configure(
+            text="Opening browser...", text_color=COLORS["yellow"],
+        )
         self.update_idletasks()
 
         def on_complete(creds):
@@ -1068,9 +1071,7 @@ class TaxKingApp(ctk.CTk):
                 ))
 
         try:
-            start_oauth_flow(
-                config["google_client_id"], config["google_client_secret"], on_complete,
-            )
+            start_oauth_flow(client_id, client_secret, on_complete)
         except Exception as e:
             messagebox.showerror("OAuth Error", f"Could not start OAuth flow:\n{e}")
             self._refresh_email_tab()
@@ -1278,67 +1279,6 @@ class TaxKingApp(ctk.CTk):
             )
         except Exception as e:
             messagebox.showerror("Import Error", f"Error importing {filename}:\n{e}")
-
-    def _show_google_oauth_setup(self):
-        config = load_config()
-
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Google OAuth Setup")
-        dialog.geometry("620x600")
-        dialog.transient(self)
-        dialog.grab_set()
-
-        ctk.CTkLabel(
-            dialog, text="Google OAuth Setup",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).pack(padx=20, pady=(20, 8))
-
-        instructions = (
-            "One-time setup to enable Gmail integration. Takes about 5 minutes.\n\n"
-            "1. Go to console.cloud.google.com (sign in with your Google account)\n"
-            "2. Create a new project (top bar → 'Select a project' → 'New Project')\n"
-            "3. Enable Gmail API: search 'Gmail API' in the top bar → click → Enable\n"
-            "4. Set up OAuth consent screen:\n"
-            "    • APIs & Services → OAuth consent screen\n"
-            "    • Choose 'External', click Create\n"
-            "    • Fill in app name (e.g. 'mapleslip-personal') and your email\n"
-            "    • Skip scopes screen, add yourself as a test user\n"
-            "5. Create credentials:\n"
-            "    • APIs & Services → Credentials → Create Credentials → OAuth client ID\n"
-            "    • Application type: 'Desktop app'\n"
-            "    • Copy the client ID and client secret below"
-        )
-        ctk.CTkLabel(
-            dialog, text=instructions,
-            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
-            wraplength=560, justify="left",
-        ).pack(padx=20, pady=(0, 12), anchor="w")
-
-        # Client ID
-        ctk.CTkLabel(dialog, text="Client ID:", font=ctk.CTkFont(size=13)).pack(padx=20, anchor="w")
-        client_id_entry = ctk.CTkEntry(dialog, width=560, placeholder_text="xxxxx.apps.googleusercontent.com")
-        client_id_entry.pack(padx=20, pady=(2, 8))
-        if config.get("google_client_id"):
-            client_id_entry.insert(0, config["google_client_id"])
-
-        # Client Secret
-        ctk.CTkLabel(dialog, text="Client Secret:", font=ctk.CTkFont(size=13)).pack(padx=20, anchor="w")
-        secret_entry = ctk.CTkEntry(dialog, width=560, placeholder_text="GOCSPX-...", show="*")
-        secret_entry.pack(padx=20, pady=(2, 12))
-        if config.get("google_client_secret"):
-            secret_entry.insert(0, config["google_client_secret"])
-
-        def save_settings():
-            config["google_client_id"] = client_id_entry.get().strip()
-            config["google_client_secret"] = secret_entry.get().strip()
-            save_config(config)
-            self._refresh_email_tab()
-            dialog.destroy()
-
-        ctk.CTkButton(
-            dialog, text="Save", command=save_settings,
-            width=140, fg_color=COLORS["green"], hover_color="#27ae60",
-        ).pack(pady=(0, 16))
 
     # ── Bank Accounts Tab ───────────────────────────────────────
     def _build_bank_tab(self):

@@ -1,5 +1,9 @@
-# ─── User data (sensitive!) ────────────────────────────────────
-# Contains Plaid API keys, access tokens, parsed tax data, and uploaded PDFs.
+# ─── User data + dev credentials (sensitive!) ──────────────────
+# Contains:
+#   - .dev_credentials.json  (Google OAuth client_id/secret — developer-side)
+#   - config.json            (user-facing app settings + Plaid keys)
+#   - tax_data.json          (parsed slips, access tokens, etc.)
+#   - documents/             (uploaded PDFs)
 # NEVER commit this folder.
 data/
 

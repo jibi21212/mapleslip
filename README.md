@@ -98,18 +98,9 @@ That's it. The app creates a `data/` folder on first run to store your tax info 
 4. Use the **Development** environment (free, real banks, up to 100 connections)
 
 ### Gmail (for email scanner)
-One-time Google Cloud setup (free, ~5 minutes):
+The app's "Connect Gmail Account" button uses developer-shipped OAuth credentials. If those credentials are bundled with your install, just click the button — browser opens, you log in once, and you can connect multiple Gmail accounts after that.
 
-1. Open [console.cloud.google.com](https://console.cloud.google.com) and sign in
-2. Create a new project (e.g. `mapleslip-personal`)
-3. Enable the **Gmail API** (search "Gmail API" in the top bar → Enable)
-4. Configure the OAuth consent screen: **APIs & Services → OAuth consent screen** → External → add your email as a test user
-5. Create OAuth credentials: **APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop app**
-6. Copy the client ID + client secret
-7. In mapleslip → **Email Scanner** tab → **OAuth Setup** → paste them in
-8. Click **Connect Gmail Account** — browser opens, you log in once, done
-
-You can connect multiple Gmail accounts after this initial setup.
+If you're running mapleslip from a public clone and the Gmail integration shows as **Unavailable**, the developer credentials file (`data/.dev_credentials.json`) is missing. See [HANDOFF.md](HANDOFF.md#dev-side-credentials-datadev_credentialsjson) for how to create your own.
 
 ### Watch folder
 **Settings** (top right) → enter folder path (e.g. `C:\Users\You\Downloads`) → enable.

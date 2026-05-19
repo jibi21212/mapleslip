@@ -15,6 +15,20 @@
 - GitHub username: `jibi21212`
 - Repo URL: `https://github.com/jibi21212/mapleslip` (public, MIT)
 
+## ⚠️ Critical UX preference: developer setup goes in CHAT, not in the app
+
+When a feature requires the developer (= the user) to do a **one-time setup** like registering an OAuth app, getting API keys, etc.:
+
+- **DO** tell them the setup steps in chat
+- **DO** bake the credentials into a gitignored dev-credentials file
+- **DO** treat the setup work as "already done by the developer" from the app's perspective
+- **DO NOT** add setup UI screens to the app where each user is expected to do the dev work
+- **DO NOT** make the in-app onboarding ask for client_ids, API keys, etc. that came from the developer's account
+
+The mistake to avoid: building an OAuth Setup dialog where each end user has to register their own Google Cloud project. The app should ship with the credentials baked in (via gitignored dev file) and end users just click "Connect Gmail" → it works.
+
+Note: Plaid is **per-user** credentials (each user uses their OWN Plaid account, since it's a banking integration). Google OAuth is **developer-shipped** credentials (one project, shared across all end users, subject to Google's 100-test-user limit for unverified apps). This distinction matters when building integrations.
+
 ---
 
 ## What this project is
@@ -256,7 +270,7 @@ Ranked by impact / effort:
 ## How to set this up on a fresh machine
 
 ```bash
-git clone https://github.com/jibi21212/mapleslip.git
+git clone https://github.com/jibkh21212/mapleslip.git
 cd mapleslip
 pip install -r requirements.txt
 
@@ -268,6 +282,47 @@ python run.py
 ```
 
 On first run, the app creates a `data/` folder. The user enters Plaid keys in **Bank Accounts > Plaid Settings** (if they want bank integration) and sets their province + watch folder in **Settings** (top right of header).
+
+## Dev-side credentials (`data/.dev_credentials.json`)
+
+This file is **developer-shipped** and gitignored. Its purpose is to hold OAuth client credentials for services the developer registered ONCE (not per-user). End users never touch this file or see anything about it in the app — they just click "Connect Gmail" and it works.
+
+**File location**: `data/.dev_credentials.json`
+
+**Schema**:
+```json
+{
+  "google_client_id": "xxxxx.apps.googleusercontent.com",
+  "google_client_secret": "GOCSPX-xxxxx"
+}
+```
+
+**How to create it** (one-time, ~5 minutes):
+
+1. Sign in to https://console.cloud.google.com with your Google account
+2. Top bar → "Select a project" → "New Project" → name it (e.g. `mapleslip`) → Create
+3. Top search bar → "Gmail API" → click it → **Enable**
+4. Left menu → **APIs & Services** → **OAuth consent screen**
+   - User type: **External** → Create
+   - App name: `mapleslip`, user support email: your email
+   - Developer contact: your email
+   - Skip the Scopes screen (Save and Continue)
+   - On "Test users" screen, click **+ Add Users** and add the Gmail addresses of anyone who will use the app (up to 100). **Including your own.**
+   - Save and Continue, then Back to Dashboard
+5. Left menu → **APIs & Services** → **Credentials**
+   - **+ Create Credentials** → **OAuth client ID**
+   - Application type: **Desktop app**
+   - Name: `mapleslip-desktop`
+   - Click Create → a popup shows the client ID and client secret
+6. Copy both into `data/.dev_credentials.json` using the schema above
+
+**After this is done**, the "Connect Gmail Account" button in the app just works. End users will see Google's "This app isn't verified" warning during the OAuth consent step — they click "Advanced" → "Go to mapleslip (unsafe)" → proceed normally. This is unavoidable for unverified apps. To remove the warning, the developer would need to go through Google's verification process (sensitive scopes like Gmail readonly require a CASA security assessment — not feasible for a personal project).
+
+**For the public GitHub repo**: this file is gitignored, so neither the developer's credentials nor end-user data ends up on GitHub. Anyone who clones the public repo would need to either:
+- Get the `.dev_credentials.json` file from the developer privately, OR
+- Create their own Google Cloud project and credentials following the steps above
+
+The app silently shows "Gmail integration: Unavailable" if the file is missing — no setup screens, no nagging.
 
 ---
 
